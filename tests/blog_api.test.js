@@ -117,6 +117,54 @@ test('blog sent without title or url gets 400 bad request and nothing gets added
     assert.strictEqual(blogsToJSON.length, initialBlogs.length)
 })
 
+test('a blog can be deleted', async () => {
+    const blogToBeDeleted = {
+        title: 'This blog will be deleted',
+        author: 'v',
+        url: 'http://example.com',
+        likes: 88
+    }
+
+    const postResponse = await api
+        .post('/api/blogs')
+        .send(blogToBeDeleted)
+        .expect(201)
+        .expect('Content-Type', /application\/json/)
+
+    const id = postResponse.body.id
+
+    let blogs = await Blog.find({})
+    let blogsToJSON = blogs.map(blog => blog.toJSON())
+
+    assert.strictEqual(blogsToJSON.length, initialBlogs.length + 1)
+
+    let contents = blogsToJSON.map(blog => blog.title)
+    assert(contents.includes('This blog will be deleted'))
+
+    const deleteResponse = await api.delete(`/api/blogs/${id}`).expect(204)
+
+    blogs = await Blog.find({})
+    blogsToJSON = blogs.map(blog => blog.toJSON())
+
+    assert.strictEqual(blogsToJSON.length, initialBlogs.length)
+
+})
+
+test('put request to /api/blogs/:id increases the likes of the blog by one', async () => {
+    const blogs = await Blog.find({})
+    const blogToUpdate = blogs[0]
+    const initialLikes = blogToUpdate.likes
+
+    const putResponse = await api
+        .put(`/api/blogs/${blogToUpdate._id}`)
+        .expect(200)
+
+    assert.strictEqual(putResponse.body.likes, initialLikes + 1)
+
+    const updatedBlog = await Blog.findById(blogToUpdate._id)
+    assert.strictEqual(updatedBlog.likes, initialLikes + 1)
+})
+
 after(async () => {
     await mongoose.connection.close()
 })
