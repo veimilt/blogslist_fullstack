@@ -1,11 +1,12 @@
 const assert = require('node:assert')
-const { test, after, beforeEach } = require('node:test')
+const { test, after, beforeEach, describe } = require('node:test')
 
 const mongoose = require('mongoose')
 const supertest = require('supertest')
 const app = require('../app')
 // const helper = require('./test_helper')
 const Blog = require('../models/blog')
+const User = require('../models/user')
 const { url } = require('node:inspector')
 
 const api = supertest(app)
@@ -25,10 +26,44 @@ const initialBlogs = [
     },
 ]
 
+const initialUsers = [
+    {
+        username: "test_user_1",
+        name: "test1",
+        password: "test123"
+    },
+    {
+        username: "test_user_2",
+        name: "test2",
+        password: "test123"
+    },
+]
+
+const createUserAndLogin = async () => {
+    const newUser = {
+        username: "abc123",
+        password: "abc123",
+        name: "abc123"
+    }
+
+    const createdUser = await api
+        .post('/api/users')
+        .send(newUser)
+
+    const loginResponse = await api
+        .post('/api/login')
+        .send(newUser)
+
+    return loginResponse.body.token
+}
+
+
 beforeEach(async () => {
     await Blog.deleteMany({})
-
     await Blog.insertMany(initialBlogs)
+
+    await User.deleteMany({})
+    await User.insertMany(initialUsers)
 })
 
 test('all blogs are returned', async () => {
@@ -50,6 +85,39 @@ test('blogs have field id and do not have a field _id', async () => {
     })
 })
 
+test('user creation and login works', async () => {
+    const newUser = {
+        username: "abc123",
+        password: "abc123",
+        name: "abc123"
+    }
+
+    const createdUser = await api
+        .post('/api/users')
+        .send(newUser)
+        .expect(201)
+    const users = await User.find({})
+    const usersToJSON = users.map(u => u.toJSON())
+
+    const usernames = usersToJSON.map(u => u.username)
+    assert(usernames.includes('abc123'))
+
+    assert.strictEqual(usersToJSON.length, initialUsers.length + 1)
+    //user ok
+
+    const loginResponse = await api
+        .post('/api/login')
+        .send(newUser)
+        .expect(200)
+
+    assert.deepStrictEqual(loginResponse.body, {
+        token: loginResponse.body.token,     // token is dynamic, so use the returned one
+        username: newUser.username,
+        name: newUser.name
+    })
+    //login ok
+})
+
 test('post to /api/blogs saves the blog sent to the database', async () => {
     const newBlog = {
         title: 'New test blog made by me',
@@ -58,8 +126,13 @@ test('post to /api/blogs saves the blog sent to the database', async () => {
         likes: 7
     }
 
+    //create a user and login first to receive a token (it's required for adding a blog etc)
+
+    const token = await createUserAndLogin()
+
     const postResponse = await api
         .post('/api/blogs')
+        .set('Authorization', `Bearer ${token}`)
         .send(newBlog)
         .expect(201)
         .expect('Content-Type', /application\/json/)
@@ -81,8 +154,13 @@ test('blog sent via post to api/blogs gets 0 likes if likes not defined', async 
         url: 'http://example.com'
     }
 
+    //create a user and login first to receive a token (it's required for adding a blog etc)
+
+    const token = await createUserAndLogin()
+
     const postResponse = await api
         .post('/api/blogs')
+        .set('Authorization', `Bearer ${token}`)
         .send(newBlogNoLikes)
         .expect(201)
         .expect('Content-Type', /application\/json/)
@@ -101,13 +179,19 @@ test('blog sent without title or url gets 400 bad request and nothing gets added
         author: 'v'
     }
 
+    //create a user and login first to receive a token (it's required for adding a blog etc)
+
+    const token = await createUserAndLogin()
+
     const postResponseNoURL = await api
         .post('/api/blogs')
+        .set('Authorization', `Bearer ${token}`)
         .send(blogNoURL)
         .expect(400)
 
     const postResponseNoTitle = await api
         .post('/api/blogs')
+        .set('Authorization', `Bearer ${token}`)
         .send(blogNoTitle)
         .expect(400)
 
@@ -118,6 +202,7 @@ test('blog sent without title or url gets 400 bad request and nothing gets added
 })
 
 test('a blog can be deleted', async () => {
+
     const blogToBeDeleted = {
         title: 'This blog will be deleted',
         author: 'v',
@@ -125,8 +210,12 @@ test('a blog can be deleted', async () => {
         likes: 88
     }
 
+    //let's create and delete a blog with user created by a createUserAndLogin -function, as we have the token that the function receives
+    const token = await createUserAndLogin()
+
     const postResponse = await api
         .post('/api/blogs')
+        .set('Authorization', `Bearer ${token}`)
         .send(blogToBeDeleted)
         .expect(201)
         .expect('Content-Type', /application\/json/)
@@ -141,7 +230,10 @@ test('a blog can be deleted', async () => {
     let contents = blogsToJSON.map(blog => blog.title)
     assert(contents.includes('This blog will be deleted'))
 
-    const deleteResponse = await api.delete(`/api/blogs/${id}`).expect(204)
+    const deleteResponse = await api
+        .delete(`/api/blogs/${id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(204)
 
     blogs = await Blog.find({})
     blogsToJSON = blogs.map(blog => blog.toJSON())
@@ -163,6 +255,101 @@ test('put request to /api/blogs/:id increases the likes of the blog by one', asy
 
     const updatedBlog = await Blog.findById(blogToUpdate._id)
     assert.strictEqual(updatedBlog.likes, initialLikes + 1)
+})
+
+describe('validation of password and username when creating a user via POST to /api/users', () => {
+    test('user not created if username or password not included in the request body', async () => {
+        const noUserName = {
+            password: "nieninf837"
+        }
+        let postResponse = await api
+            .post('/api/users')
+            .send(noUserName)
+            .expect(400)
+            .expect('Content-Type', /application\/json/)
+
+        assert.strictEqual(postResponse.body.error, 'username or password missing')
+        let usersAtEnd = await User.find({})
+        let usersToJSON = usersAtEnd.map(user => user.toJSON())
+        assert.strictEqual(usersToJSON.length, initialUsers.length)
+
+        const noPassword = {
+            userName: "nieninf837"
+        }
+        postResponse = await api
+            .post('/api/users')
+            .send(noPassword)
+            .expect(400)
+            .expect('Content-Type', /application\/json/)
+
+        assert.strictEqual(postResponse.body.error, 'username or password missing')
+        usersAtEnd = await User.find({})
+        usersToJSON = usersAtEnd.map(user => user.toJSON())
+        assert.strictEqual(usersToJSON.length, initialUsers.length)
+    })
+
+    test('username min length', async () => {
+        const testUser = {
+            username: "12",
+            name: "jotain",
+            password: "jovneovnenvnsornveo"
+        }
+
+        const postResponse = await api
+            .post('/api/users')
+            .send(testUser)
+            .expect(400)
+            .expect('Content-Type', /application\/json/)
+
+        assert.strictEqual(postResponse.body.error, 'username must be at least 3 characters long')
+
+        let usersAtEnd = await User.find({})
+        let usersToJSON = usersAtEnd.map(user => user.toJSON())
+
+        assert.strictEqual(usersToJSON.length, initialUsers.length)
+    })
+
+    test('username must be unique', async () => {
+        const testUser = {
+            username: "test_user_1",
+            name: "test1",
+            password: "test123"
+        }
+
+        const postResponse = await api
+            .post('/api/users')
+            .send(testUser)
+            .expect(400)
+            .expect('Content-Type', /application\/json/)
+
+        assert.strictEqual(postResponse.body.error, 'expected username to be unique')
+
+        let usersAtEnd = await User.find({})
+        let usersToJSON = usersAtEnd.map(user => user.toJSON())
+
+        assert.strictEqual(usersToJSON.length, initialUsers.length)
+    })
+
+    test('password min length', async () => {
+        const testUser = {
+            username: "moikka",
+            name: "jotain",
+            password: "mo"
+        }
+
+        const postResponse = await api
+            .post('/api/users')
+            .send(testUser)
+            .expect(400)
+            .expect('Content-Type', /application\/json/)
+
+        assert.strictEqual(postResponse.body.error, 'password must be at least 3 characters long')
+
+        let usersAtEnd = await User.find({})
+        let usersToJSON = usersAtEnd.map(user => user.toJSON())
+
+        assert.strictEqual(usersToJSON.length, initialUsers.length)
+    })
 })
 
 after(async () => {

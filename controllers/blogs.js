@@ -1,23 +1,28 @@
 const blogslistRouter = require('express').Router()
-const { request, response, resource } = require('../app')
 const Blog = require('../models/blog')
-const { error } = require('../utils/logger')
+// const User = require('../models/user')
+// const { error } = require('../utils/logger')
+const { userExtractor } = require('../utils/middleware')
 
 blogslistRouter.get('/', async (request, response) => {
-    const blogs = await Blog.find({})
+    const blogs = await Blog.find({}).populate('user', { username: 1, name: 1, id: 1 })
     response.json(blogs)
 })
 
-blogslistRouter.post('/', async (request, response) => {
+blogslistRouter.post('/', userExtractor, async (request, response) => {
     const body = request.body
     if (!body.title || !body.url) {
         return response.status(400).json({
             error: 'title or url missing in the request body'
         })
     }
-    const blog = new Blog(request.body)
-
+    const user = request.user
+    const blog = new Blog({ ...request.body, user })
     const result = await blog.save()
+    // Add the blog to the user's blogs array
+    user.blogs = user.blogs.concat(result._id)
+    await user.save()
+
     response.status(201).json(result)
 })
 
@@ -32,19 +37,29 @@ blogslistRouter.put('/:id', async (request, response) => {
     response.json(result)
 })
 
-blogslistRouter.delete('/:id', async (request, response) => {
+blogslistRouter.delete('/:id', userExtractor, async (request, response) => {
     const id = request.params.id
-    if (!id) {
-        return response.status(400).json({
-            error: 'id missing from the request url'
-        })
-    }
-    const blog = await Blog.findByIdAndDelete(id)
-    if (blog) {
-        return response.status(204).end()
-    } else {
+    const user = request.user
+
+    const blogToBeDeleted = await Blog.findById(id)
+    if (!blogToBeDeleted) {
         return response.status(404).end()
     }
+
+    if (blogToBeDeleted.user.toString() !== user._id.toString()) {
+        return response.status(401).json({ error: 'not authorized' })
+    }
+
+    await Blog.findByIdAndDelete(id)
+    return response.status(204).end()
 })
+
+
+blogslistRouter.delete('/', (request, response) => {
+    return response.status(400).json({
+        error: 'id missing from the request url'
+    })
+})
+
 
 module.exports = blogslistRouter
